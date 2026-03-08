@@ -1,54 +1,42 @@
 import os
 from openai import OpenAI
 
-def generate_tasks_with_llm(user_text: str) -> dict:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return {"error": "Missing OPENAI_API_KEY. Put it in backend/.env and restart uvicorn."}
+_client = None
 
-    client = OpenAI(api_key=api_key)
-    
-    prompt = (
-            "Return exactly 3 actionable tasks (short bullets) for the user's request.\n"
-            f"User request: {user_text}"
-    )
 
-    resp = client.responses.create(
-        model="gpt-4.1-mini",
-        input=prompt
-    )
+def _get_client():
+    global _client
+    if _client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return None
+        _client = OpenAI(api_key=api_key)
+    return _client
 
-    output = resp.output_text.strip()
-    
-    #tasks = [t.strip("-• \t") for t in output.splitlines() if t.strip()][:3]    
-    tasks = []
-    count = 0
-    for t in output.splitlines():
-        if t.strip():
-            tasks.append(t.strip("-• \t"))
-            if len(tasks) == 3:
-                break
-    
-    print("model:", getattr(resp, "model", None))
-    print("usage:", getattr(resp, "usage", None))
-    return {"tasks": tasks}
+
+def _sanitize(text: str) -> str:
+    """Strip angle brackets so user input can't break XML delimiters in prompts."""
+    return text.replace("<", "").replace(">", "")
 
 
 def generate_transition_summary(current_task: str, duration_minutes: int, next_task: str, notes: str = "") -> str:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
+    client = _get_client()
+    if not client:
         return f"Worked on '{current_task}' for {duration_minutes} min. Pick up here when you return."
 
-    client = OpenAI(api_key=api_key)
+    current_task = _sanitize(current_task)
+    next_task    = _sanitize(next_task)
+    notes        = _sanitize(notes)
 
     notes_section = (
-        f"\nThe user jotted these notes during the session:\n\"{notes}\"\n"
+        f"\nThe user jotted these notes during the session:\n<notes>{notes}</notes>\n"
         if notes else ""
     )
 
     prompt = (
-        f"The user just finished a {duration_minutes}-minute work session on: '{current_task}'.\n"
-        f"They are switching to: '{next_task}'."
+        f"The user just finished a {duration_minutes}-minute work session.\n"
+        f"Current task: <task>{current_task}</task>\n"
+        f"Next task: <next_task>{next_task}</next_task>"
         f"{notes_section}\n"
         "Write a single short paragraph (2-3 sentences) that:\n"
         "1. References their specific notes if provided, otherwise infers what they were working on\n"

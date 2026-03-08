@@ -381,9 +381,7 @@ body {
 /* ── Left column ── */
 .col-left {
   padding: 24px 20px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
+  overflow: hidden;
   transition: opacity 0.45s ease;
 }
 
@@ -393,6 +391,10 @@ body {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
 .tl-item {
@@ -545,7 +547,8 @@ body.focus-mode .col-center::before {
 
 .reentry-card.visible {
   opacity: 1;
-  max-height: 160px;
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 .reentry-label {
@@ -864,6 +867,17 @@ body.focus-mode .col-right {
 }
 
 .foot-right { display: flex; gap: 10px; }
+
+.notif-status {
+  font-size: 16px;
+  opacity: 0.35;
+  cursor: default;
+  transition: opacity 0.3s;
+  user-select: none;
+}
+.notif-status.granted  { opacity: 0.85; }
+.notif-status.denied   { opacity: 0.25; filter: grayscale(1); }
+.notif-status[title]   { cursor: help; }
 
 /* ── Weekly modal ── */
 .modal-overlay {

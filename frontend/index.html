@@ -69,7 +69,7 @@
 
         <div class="col-sep"></div>
 
-        <p class="col-label">Log</p>
+        <p class="col-label">Logs</p>
         <ul id="session-log" class="log-list">
           <li class="log-empty">No sessions yet.</li>
         </ul>
@@ -107,7 +107,7 @@
 
           <div class="ring-center">
             <span id="session-timer" class="ring-timer">00:00</span>
-            <span class="ring-sub">session</span>
+            <span id="ring-sub-label" class="ring-sub">ready</span>
           </div>
         </div>
 
@@ -128,7 +128,7 @@
         ></textarea>
 
         <div class="focus-controls">
-          <span id="focus-hint" class="focus-hint">Ready to begin</span>
+          <span id="focus-hint" class="focus-hint">Name your task and press ⌘↵ or click Start</span>
           <button id="focus-btn" class="btn-cta">Start session</button>
         </div>
 
@@ -162,6 +162,7 @@
     <footer class="dash-foot">
       <button id="switch-now-btn" class="btn-ghost" disabled>Switch now</button>
       <span id="live-clock" class="clock">--:--:--</span>
+      <span id="notif-status" class="notif-status" title="Notifications">🔔</span>
       <div class="foot-right">
         <button id="weekly-btn" class="btn-ghost">This week</button>
         <button id="edit-schedule-btn" class="btn-ghost">Edit schedule</button>

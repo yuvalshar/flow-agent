@@ -3,6 +3,16 @@
    All logic: schedule, session, timer, ring, transitions
 ══════════════════════════════════════════════════ */
 
+// ── HTML escaping ───────────────────────────────────────
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // ── Ring geometry ──────────────────────────────────────
 const RING_R = 88;
 const RING_C = 2 * Math.PI * RING_R; // 552.92
@@ -19,6 +29,7 @@ let warningFired    = false;
 let transitionFired = false;
 let sessionLog      = [];
 let clockInterval   = null;
+let targetBlock     = null; // the next block at session-start; used for reliable transition detection
 
 // ── DOM ────────────────────────────────────────────────
 const scheduleEntries = document.getElementById('schedule-entries');
@@ -44,6 +55,8 @@ const curTaskDisplay     = document.getElementById('current-task-display');
 const sessionNotes       = document.getElementById('session-notes');
 const reentryCard        = document.getElementById('reentry-card');
 const reentrySummary     = document.getElementById('reentry-summary');
+const ringSubLabel       = document.getElementById('ring-sub-label');
+const notifStatus        = document.getElementById('notif-status');
 
 // ── Particles ──────────────────────────────────────────
 (function spawnParticles() {
@@ -77,8 +90,8 @@ function addScheduleRow(time = '', label = '') {
   const row = document.createElement('div');
   row.className = 'schedule-row';
   row.innerHTML = `
-    <input type="time" value="${time}">
-    <input type="text" value="${label}" placeholder="e.g. Violin practice">
+    <input type="time" value="${escapeHtml(time)}">
+    <input type="text" value="${escapeHtml(label)}" placeholder="e.g. Violin practice">
     <button class="remove-slot" title="Remove">×</button>
   `;
   row.querySelector('.remove-slot').addEventListener('click', () => row.remove());
@@ -146,9 +159,29 @@ function initDashboard() {
 }
 
 // ── Browser notifications ───────────────────────────────
-function requestNotificationPermission() {
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
+async function requestNotificationPermission() {
+  if (!('Notification' in window)) {
+    updateNotifStatus();
+    return;
+  }
+  if (Notification.permission === 'default') {
+    await Notification.requestPermission();
+  }
+  updateNotifStatus();
+}
+
+function updateNotifStatus() {
+  if (!notifStatus) return;
+  const perm = ('Notification' in window) ? Notification.permission : 'unavailable';
+  notifStatus.classList.remove('granted', 'denied');
+  if (perm === 'granted') {
+    notifStatus.classList.add('granted');
+    notifStatus.title = 'Notifications enabled';
+  } else if (perm === 'denied') {
+    notifStatus.classList.add('denied');
+    notifStatus.title = 'Notifications blocked — enable in browser settings';
+  } else {
+    notifStatus.title = 'Notifications unavailable';
   }
 }
 
@@ -246,7 +279,7 @@ async function fetchWeekly() {
         </div>
         ${day.tasks.map(t => `
           <div class="week-task">
-            <span class="week-task-name">${t.task}</span>
+            <span class="week-task-name">${escapeHtml(t.task)}</span>
             <span class="week-task-mins">${fmtMins(t.minutes)}</span>
           </div>
         `).join('')}
@@ -279,7 +312,7 @@ async function loadSessionHistory() {
       const li = document.createElement('li');
       li.className = 'log-item log-item-history';
       li.innerHTML = `
-        <div class="log-item-task">${s.task_name}</div>
+        <div class="log-item-task">${escapeHtml(s.task_name)}</div>
         <div class="log-item-meta">${s.duration_minutes} min · ${formatLogDate(s.created_at)}</div>
       `;
       sessionLogEl.appendChild(li);
@@ -325,12 +358,15 @@ function startSession(task) {
   warningFired    = false;
   transitionFired = false;
 
+  targetBlock = getNextBlock();
+
   focusInput.disabled  = true;
   focusBtn.textContent = 'End session';
   focusBtn.classList.remove('btn-cta');
   focusBtn.classList.add('btn-ghost');
-  focusHint.textContent = 'Session in progress';
+  focusHint.textContent = '⌘↵ to end · use "Switch now" to trigger a transition';
   switchNowBtn.disabled = false;
+  if (ringSubLabel) ringSubLabel.textContent = 'elapsed';
 
   curTaskDisplay.textContent = task;
   curTaskDisplay.classList.add('visible');
@@ -368,14 +404,16 @@ function endSession(log = true) {
   currentTask     = '';
   warningFired    = false;
   transitionFired = false;
+  targetBlock     = null;
 
   focusInput.disabled   = false;
   focusInput.value      = '';
   focusBtn.textContent  = 'Start session';
   focusBtn.classList.remove('btn-ghost');
   focusBtn.classList.add('btn-cta');
-  focusHint.textContent     = 'Ready to begin';
+  focusHint.textContent     = 'Name your task and press ⌘↵ or click Start';
   sessionTimer.textContent  = '00:00';
+  if (ringSubLabel) ringSubLabel.textContent = 'ready';
   sessionTimer.className    = 'ring-timer';
   switchNowBtn.disabled     = true;
 
@@ -438,8 +476,8 @@ function updateNextUp() {
   const remaining = nextMins - total;
 
   nextItemDisplay.innerHTML = `
-    <div class="next-name">${next.label}</div>
-    <div class="next-meta">at ${next.time} &nbsp;·&nbsp; in ${remaining} min</div>
+    <div class="next-name">${escapeHtml(next.label)}</div>
+    <div class="next-meta">at ${escapeHtml(next.time)} &nbsp;·&nbsp; in ${remaining} min</div>
   `;
 
   countdownWrap.style.display = 'block';
@@ -460,48 +498,48 @@ function updateNextUp() {
   }
 
   // Labels + states
-  countdownValue.textContent = `${remaining} min`;
+  countdownValue.textContent = fmtMins(remaining);
 
+  const taskLabel = next.label.length > 18 ? next.label.slice(0, 17) + '…' : next.label;
   if (remaining <= 5) {
-    countdownValue.className = 'cd-value warning';
-    progressFill.className   = 'bar-fill danger';
-    countdownText.textContent = 'SWITCHING SOON';
+    countdownValue.className  = 'cd-value warning';
+    progressFill.className    = 'bar-fill danger';
+    countdownText.textContent = 'SWITCHING NOW';
   } else if (remaining <= WARN_MINUTES) {
-    countdownValue.className = 'cd-value warning';
-    progressFill.className   = 'bar-fill warning';
-    countdownText.textContent = 'WRAPPING UP';
+    countdownValue.className  = 'cd-value warning';
+    progressFill.className    = 'bar-fill warning';
+    countdownText.textContent = `WRAPPING UP · ${taskLabel.toUpperCase()}`;
   } else {
-    countdownValue.className = 'cd-value';
-    progressFill.className   = 'bar-fill';
-    countdownText.textContent = 'TIME REMAINING';
+    countdownValue.className  = 'cd-value';
+    progressFill.className    = 'bar-fill';
+    countdownText.textContent = `UNTIL · ${taskLabel.toUpperCase()}`;
   }
 }
 
 // ── Transition warning + auto-trigger ─────────────────
 function checkTransitionWarning() {
-  const next = getNextBlock();
-  if (!next) return;
-  const remaining = timeToMinutes(next.time) - getNow();
+  if (!sessionActive || !targetBlock) return;
+  const remaining = timeToMinutes(targetBlock.time) - getNow();
 
-  if (remaining <= WARN_MINUTES && !warningFired && sessionActive) {
+  if (remaining <= WARN_MINUTES && !warningFired) {
     warningFired = true;
     sessionTimer.classList.add('warning');
-    focusHint.textContent = `${WARN_MINUTES} min until ${next.label} — start wrapping up`;
+    focusHint.textContent = `${WARN_MINUTES} min until ${targetBlock.label} — start wrapping up`;
     playChime('warn');
-    sendNotification('Flow — Time to wrap up', `${next.label} starts in ${WARN_MINUTES} min.`);
+    sendNotification('Flow — Time to wrap up', `${targetBlock.label} starts in ${WARN_MINUTES} min.`);
   }
 
-  if (remaining <= 0 && !transitionFired && sessionActive) {
+  if (remaining <= 0 && !transitionFired) {
     transitionFired = true;
     playChime('transition');
-    sendNotification('Flow — Time to switch', `Starting ${next.label} now.`);
-    triggerTransition();
+    sendNotification('Flow — Time to switch', `Starting ${targetBlock.label} now.`);
+    triggerTransition(targetBlock);
   }
 }
 
 // ── Trigger transition screen ──────────────────────────
-function triggerTransition() {
-  const next     = getNextBlock() || { label: 'Next task' };
+function triggerTransition(overrideNext = null) {
+  const next     = overrideNext || getNextBlock() || { label: 'Next task' };
   const duration = sessionActive ? Math.round((new Date() - sessionStart) / 60000) : 0;
   const task     = currentTask || 'Current task';
 
@@ -551,8 +589,8 @@ function renderTodaySchedule() {
         ${i < last ? '<div class="tl-line"></div>' : ''}
       </div>
       <div class="tl-body">
-        <span class="tl-time">${block.time}</span>
-        <span class="tl-name">${block.label}</span>
+        <span class="tl-time">${escapeHtml(block.time)}</span>
+        <span class="tl-name">${escapeHtml(block.label)}</span>
       </div>
     `;
     todayScheduleEl.appendChild(li);
@@ -567,7 +605,7 @@ function addLogItem(task, duration) {
   const li = document.createElement('li');
   li.className = 'log-item';
   li.innerHTML = `
-    <div class="log-item-task">${task}</div>
+    <div class="log-item-task">${escapeHtml(task)}</div>
     <div class="log-item-meta">${duration} min · ${new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</div>
   `;
   sessionLogEl.prepend(li);
