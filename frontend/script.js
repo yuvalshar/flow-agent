@@ -137,6 +137,55 @@ startBtn.addEventListener('click', () => {
   initDashboard();
 });
 
+// ── Session persistence ─────────────────────────────────
+function saveSessionState() {
+  localStorage.setItem('flow_active_session', JSON.stringify({
+    sessionStart: sessionStart.toISOString(),
+    currentTask,
+    targetBlock,
+  }));
+}
+
+function clearSessionState() {
+  localStorage.removeItem('flow_active_session');
+}
+
+function restoreSessionIfAny() {
+  try {
+    const saved = localStorage.getItem('flow_active_session');
+    if (!saved) return false;
+    const s = JSON.parse(saved);
+    if (!s.sessionStart || !s.currentTask) return false;
+
+    sessionStart  = new Date(s.sessionStart);
+    currentTask   = s.currentTask;
+    targetBlock   = s.targetBlock || null;
+    sessionActive = true;
+
+    // Recompute warning/transition flags from current time
+    const remaining = targetBlock ? timeToMinutes(targetBlock.time) - getNow() : 999;
+    warningFired    = remaining <= WARN_MINUTES;
+    transitionFired = remaining <= 0;
+
+    return true;
+  } catch { return false; }
+}
+
+function applyRestoredSessionUI() {
+  focusInput.disabled  = true;
+  focusBtn.textContent = 'End session';
+  focusBtn.classList.remove('btn-cta');
+  focusBtn.classList.add('btn-ghost');
+  focusHint.textContent = '⌘↵ to end · use "Switch now" to trigger a transition';
+  switchNowBtn.disabled = false;
+  if (ringSubLabel) ringSubLabel.textContent = 'elapsed';
+  if (warningFired)  sessionTimer.classList.add('warning');
+  curTaskDisplay.textContent = currentTask;
+  curTaskDisplay.classList.add('visible');
+  document.body.classList.add('focus-mode');
+  fetchReentryContext(currentTask);
+}
+
 // ── Dashboard init ─────────────────────────────────────
 function initDashboard() {
   renderTodaySchedule();
@@ -156,6 +205,11 @@ function initDashboard() {
   document.getElementById('weekly-modal').addEventListener('click', e => {
     if (e.target === e.currentTarget) closeWeekly();
   });
+
+  if (restoreSessionIfAny()) {
+    applyRestoredSessionUI();
+    if (transitionFired) triggerTransition(targetBlock);
+  }
 }
 
 // ── Browser notifications ───────────────────────────────
@@ -375,6 +429,7 @@ function startSession(task) {
 
   document.body.classList.add('focus-mode');
 
+  saveSessionState();
   fetchReentryContext(task);
 }
 
@@ -405,6 +460,7 @@ function endSession(log = true) {
   warningFired    = false;
   transitionFired = false;
   targetBlock     = null;
+  clearSessionState();
 
   focusInput.disabled   = false;
   focusInput.value      = '';
