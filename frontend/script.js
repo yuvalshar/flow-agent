@@ -681,3 +681,17 @@ document.getElementById('confirm-switch-btn').addEventListener('click', () => {
   renderTodaySchedule();
   focusInput.value = nextLabel;
 });
+
+// ── Auto-restore on page load ───────────────────────────
+(function autoRestore() {
+  const savedSession  = localStorage.getItem('flow_active_session');
+  const savedSchedule = loadScheduleFromStorage();
+  if (!savedSession || !savedSchedule || !savedSchedule.length) return;
+
+  // Populate schedule array directly, bypassing the setup form
+  schedule = [...savedSchedule].sort((a, b) => a.time.localeCompare(b.time));
+
+  // Skip setup screen — go straight to dashboard with session running
+  showScreen('dashboard-screen');
+  initDashboard();
+})();
