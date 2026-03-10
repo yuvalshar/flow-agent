@@ -1,5 +1,8 @@
 import os
+import logging
 from openai import OpenAI
+
+logger = logging.getLogger(__name__)
 
 _client = None
 
@@ -45,5 +48,13 @@ def generate_transition_summary(current_task: str, duration_minutes: int, next_t
         "Write in second person. Do not use bullet points."
     )
 
-    resp = client.responses.create(model="gpt-4.1-mini", input=prompt)
-    return resp.output_text.strip()
+    try:
+        resp = client.responses.create(model="gpt-4.1-mini", input=prompt)
+        text = resp.output_text
+        if not text:
+            logger.error("OpenAI returned empty output_text. Full response: %s", resp)
+            return f"Worked on '{current_task}' for {duration_minutes} min. Pick up here when you return."
+        return text.strip()
+    except Exception as e:
+        logger.exception("OpenAI API call failed: %s", e)
+        return f"Worked on '{current_task}' for {duration_minutes} min. Pick up here when you return."

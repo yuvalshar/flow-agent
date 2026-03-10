@@ -25,6 +25,7 @@ let schedule        = [];
 let sessionStart    = null;
 let currentTask     = '';
 let sessionActive   = false;
+let _restoredNotes  = '';
 let warningFired    = false;
 let transitionFired = false;
 let sessionLog      = [];
@@ -35,6 +36,7 @@ let targetBlock     = null; // the next block at session-start; used for reliabl
 const scheduleEntries = document.getElementById('schedule-entries');
 const addSlotBtn      = document.getElementById('add-slot-btn');
 const startBtn        = document.getElementById('start-btn');
+const cancelEditBtn   = document.getElementById('cancel-edit-btn');
 
 const liveClock          = document.getElementById('live-clock');
 const sessionTimer       = document.getElementById('session-timer');
@@ -209,18 +211,33 @@ addSlotBtn.addEventListener('click', () => {
   rows[rows.length - 1].querySelector('input[type="time"]').focus();
 });
 
-startBtn.addEventListener('click', () => {
+function applyScheduleFromForm() {
   schedule = [];
   scheduleEntries.querySelectorAll('.schedule-row').forEach(row => {
     const time  = row.querySelector('input[type="time"]').value;
     const label = row.querySelector('input[type="text"]').value.trim();
     if (time && label) schedule.push({ time, label });
   });
-  if (!schedule.length) return;
+  if (!schedule.length) return false;
   schedule.sort((a, b) => a.time.localeCompare(b.time));
   saveScheduleToStorage(schedule);
+  return true;
+}
+
+cancelEditBtn.addEventListener('click', () => {
+  // Discard any edits, go straight back — session is still active in memory
+  showScreen('dashboard-screen');
+});
+
+startBtn.addEventListener('click', () => {
+  if (!applyScheduleFromForm()) return;
+  const wasActive = sessionActive;
   showScreen('dashboard-screen');
   initDashboard();
+  // If a session was running when user opened Edit Schedule, restore it
+  if (wasActive) {
+    applyRestoredSessionUI();
+  }
 });
 
 // ── Session persistence ─────────────────────────────────
@@ -229,6 +246,7 @@ function saveSessionState() {
     sessionStart: sessionStart.toISOString(),
     currentTask,
     targetBlock,
+    notes: sessionNotes.value,
   }));
 }
 
@@ -247,6 +265,7 @@ function restoreSessionIfAny() {
     currentTask   = s.currentTask;
     targetBlock   = s.targetBlock || null;
     sessionActive = true;
+    _restoredNotes = s.notes || '';
 
     // Recompute warning/transition flags from current time
     const remaining = targetBlock ? timeToMinutes(targetBlock.time) - getNow() : 999;
@@ -269,6 +288,7 @@ function applyRestoredSessionUI() {
   curTaskDisplay.textContent = currentTask;
   curTaskDisplay.classList.add('visible');
   document.body.classList.add('focus-mode');
+  if (_restoredNotes) { sessionNotes.value = _restoredNotes; _restoredNotes = ''; }
   fetchReentryContext(currentTask);
 }
 
@@ -281,9 +301,10 @@ function initDashboard() {
   requestNotificationPermission();
 
   focusBtn.addEventListener('click', toggleSession);
-  switchNowBtn.addEventListener('click', triggerTransition);
+  switchNowBtn.addEventListener('click', () => triggerTransition());
+  sessionNotes.addEventListener('input', () => { if (sessionActive) saveSessionState(); });
   editScheduleBtn.addEventListener('click', () => {
-    endSession(false);
+    cancelEditBtn.style.display = sessionActive ? '' : 'none';
     showScreen('setup-screen');
   });
   document.getElementById('weekly-btn').addEventListener('click', openWeekly);
@@ -590,7 +611,12 @@ function getNow() {
 
 function getNextBlock() {
   const total = getNow();
-  const future = schedule.filter(s => timeToMinutes(s.time) > total);
+  const future = schedule.filter(s => {
+    if (timeToMinutes(s.time) <= total) return false;
+    // Skip the block we're currently working on — handles early switches
+    if (sessionActive && currentTask && s.label.toLowerCase() === currentTask.toLowerCase()) return false;
+    return true;
+  });
   return future.length ? future[0] : null;
 }
 
@@ -682,7 +708,7 @@ function checkTransitionWarning() {
 // ── Trigger transition screen ──────────────────────────
 function triggerTransition(overrideNext = null) {
   const next     = overrideNext || getNextBlock() || { label: 'Next task' };
-  const duration = sessionActive ? Math.round((new Date() - sessionStart) / 60000) : 0;
+  const duration = sessionActive ? (Math.round((new Date() - sessionStart) / 60000) || 0) : 0;
   const task     = currentTask || 'Current task';
 
   document.getElementById('t-from-task').textContent = task;
@@ -702,10 +728,18 @@ async function generateContextSummary(task, duration, nextTask, notes = '') {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ current_task: task, duration_minutes: duration, next_task: nextTask, notes })
     });
+    if (!res.ok) {
+      const err = await res.text().catch(() => res.status);
+      console.error('Transition API error', res.status, err);
+      document.getElementById('context-summary').textContent =
+        `You worked on "${task}" for ${duration} min. Pick up here when you return.`;
+      return;
+    }
     const data = await res.json();
     document.getElementById('context-summary').textContent =
       data.summary || 'Session complete.';
-  } catch {
+  } catch (e) {
+    console.error('generateContextSummary failed:', e);
     document.getElementById('context-summary').textContent =
       `You worked on "${task}" for ${duration} min. Pick up here when you return.`;
   }

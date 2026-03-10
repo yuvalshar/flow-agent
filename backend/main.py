@@ -5,14 +5,26 @@ from llm_client import generate_transition_summary
 from DB.models import SessionContext
 from DB.db import SessionLocal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+from typing import Optional
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    body = await request.body()
+    logger.error("422 on %s — body: %s — errors: %s", request.url.path, body.decode(), exc.errors())
+    return JSONResponse(status_code=422, content={"detail": exc.errors()})
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,9 +36,19 @@ app.add_middleware(
 
 class TransitionRequest(BaseModel):
     current_task: str
-    duration_minutes: int
+    duration_minutes: Optional[int] = 0
     next_task: str
     notes: str = ""
+
+    @field_validator('duration_minutes', mode='before')
+    @classmethod
+    def coerce_duration(cls, v):
+        if v is None:
+            return 0
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
 
 frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend")
 app.mount("/static", StaticFiles(directory=frontend_path), name="static")
