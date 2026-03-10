@@ -86,16 +86,47 @@ function showScreen(id) {
 }
 
 // ── Setup screen ───────────────────────────────────────
-let draggedRow = null;
+let draggedRow  = null;
+let sortTimeout = null;
+
+function debouncedSort() {
+  clearTimeout(sortTimeout);
+  sortTimeout = setTimeout(sortScheduleRows, 600);
+}
 
 function sortScheduleRows() {
-  const rows = [...scheduleEntries.querySelectorAll('.schedule-row')];
-  rows.sort((a, b) => {
+  const rows   = [...scheduleEntries.querySelectorAll('.schedule-row')];
+  const sorted = [...rows].sort((a, b) => {
     const ta = a.querySelector('input[type="time"]').value || '99:99';
     const tb = b.querySelector('input[type="time"]').value || '99:99';
     return ta.localeCompare(tb);
   });
-  rows.forEach(r => scheduleEntries.appendChild(r));
+
+  // Nothing to do if order hasn't changed
+  if (rows.every((r, i) => r === sorted[i])) return;
+
+  // Record positions before any DOM change
+  const first = new Map(sorted.map(r => [r, r.getBoundingClientRect().top]));
+
+  // Reorder — only touch rows that are actually out of place
+  for (let i = 0; i < sorted.length; i++) {
+    if (scheduleEntries.children[i] !== sorted[i]) {
+      scheduleEntries.insertBefore(sorted[i], scheduleEntries.children[i]);
+    }
+  }
+
+  // Animate only the rows that actually moved
+  sorted.forEach(r => {
+    const delta = first.get(r) - r.getBoundingClientRect().top;
+    if (Math.abs(delta) < 1) return;
+
+    r.style.transition = 'none';
+    r.style.transform  = `translateY(${delta}px)`;
+    r.getBoundingClientRect(); // force reflow
+    r.style.transition = 'transform 0.38s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+    r.style.transform  = '';
+    r.addEventListener('transitionend', () => { r.style.transition = ''; }, { once: true });
+  });
 }
 
 function addScheduleRow(time = '', label = '') {
@@ -116,7 +147,7 @@ function addScheduleRow(time = '', label = '') {
 
   row.querySelector('.remove-slot').addEventListener('click', () => row.remove());
 
-  row.querySelector('input[type="time"]').addEventListener('change', () => sortScheduleRows());
+  row.querySelector('input[type="time"]').addEventListener('change', debouncedSort);
 
   const handle = row.querySelector('.drag-handle');
   handle.addEventListener('mousedown', () => { row.draggable = true; });
