@@ -169,7 +169,7 @@ body {
 
 .sched-cols {
   display: grid;
-  grid-template-columns: 148px 1fr;
+  grid-template-columns: 24px 148px 1fr;
   gap: 12px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--border);
@@ -183,11 +183,34 @@ body {
 
 .schedule-row {
   display: grid;
-  grid-template-columns: 148px 1fr 44px;
+  grid-template-columns: 24px 148px 1fr 44px;
   gap: 12px;
   align-items: center;
   margin-bottom: 10px;
   animation: rowIn 0.22s ease both;
+}
+
+.drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--dim);
+  cursor: grab;
+  padding: 4px 0;
+  transition: color 0.18s;
+  user-select: none;
+}
+
+.drag-handle:hover { color: var(--muted); }
+.drag-handle:active { cursor: grabbing; }
+
+.schedule-row.dragging {
+  opacity: 0.4;
+}
+
+.schedule-row.drag-over {
+  outline: 1px dashed rgba(79,140,255,0.45);
+  border-radius: var(--radius-sm);
 }
 
 @keyframes rowIn {

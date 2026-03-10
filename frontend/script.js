@@ -86,15 +86,66 @@ function showScreen(id) {
 }
 
 // ── Setup screen ───────────────────────────────────────
+let draggedRow = null;
+
+function sortScheduleRows() {
+  const rows = [...scheduleEntries.querySelectorAll('.schedule-row')];
+  rows.sort((a, b) => {
+    const ta = a.querySelector('input[type="time"]').value || '99:99';
+    const tb = b.querySelector('input[type="time"]').value || '99:99';
+    return ta.localeCompare(tb);
+  });
+  rows.forEach(r => scheduleEntries.appendChild(r));
+}
+
 function addScheduleRow(time = '', label = '') {
   const row = document.createElement('div');
   row.className = 'schedule-row';
   row.innerHTML = `
+    <div class="drag-handle" title="Drag to reorder">
+      <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor">
+        <circle cx="3" cy="3"  r="1.5"/><circle cx="7" cy="3"  r="1.5"/>
+        <circle cx="3" cy="8"  r="1.5"/><circle cx="7" cy="8"  r="1.5"/>
+        <circle cx="3" cy="13" r="1.5"/><circle cx="7" cy="13" r="1.5"/>
+      </svg>
+    </div>
     <input type="time" value="${escapeHtml(time)}">
     <input type="text" value="${escapeHtml(label)}" placeholder="e.g. Violin practice">
     <button class="remove-slot" title="Remove">×</button>
   `;
+
   row.querySelector('.remove-slot').addEventListener('click', () => row.remove());
+
+  row.querySelector('input[type="time"]').addEventListener('change', () => sortScheduleRows());
+
+  const handle = row.querySelector('.drag-handle');
+  handle.addEventListener('mousedown', () => { row.draggable = true; });
+
+  row.addEventListener('dragstart', e => {
+    draggedRow = row;
+    row.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+  });
+
+  row.addEventListener('dragend', () => {
+    row.draggable = false;
+    row.classList.remove('dragging');
+    document.querySelectorAll('.schedule-row').forEach(r => r.classList.remove('drag-over'));
+    draggedRow = null;
+  });
+
+  row.addEventListener('dragover', e => {
+    e.preventDefault();
+    if (!draggedRow || draggedRow === row) return;
+    row.classList.add('drag-over');
+    const rect  = row.getBoundingClientRect();
+    const after = e.clientY > rect.top + rect.height / 2;
+    scheduleEntries.insertBefore(draggedRow, after ? row.nextSibling : row);
+  });
+
+  row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+  row.addEventListener('drop',      e => { e.preventDefault(); row.classList.remove('drag-over'); });
+
   scheduleEntries.appendChild(row);
 }
 
@@ -121,7 +172,11 @@ if (savedRows && savedRows.length) {
   addScheduleRow('21:00', 'Self-development');
 }
 
-addSlotBtn.addEventListener('click', () => addScheduleRow());
+addSlotBtn.addEventListener('click', () => {
+  addScheduleRow();
+  const rows = scheduleEntries.querySelectorAll('.schedule-row');
+  rows[rows.length - 1].querySelector('input[type="time"]').focus();
+});
 
 startBtn.addEventListener('click', () => {
   schedule = [];
