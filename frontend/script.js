@@ -30,7 +30,8 @@ let warningFired    = false;
 let transitionFired = false;
 let sessionLog      = [];
 let clockInterval   = null;
-let targetBlock     = null; // the next block at session-start; used for reliable transition detection
+let targetBlock       = null; // the next block at session-start; used for reliable transition detection
+let dashboardInited   = false;
 
 // ── DOM ────────────────────────────────────────────────
 const scheduleEntries = document.getElementById('schedule-entries');
@@ -298,20 +299,24 @@ function initDashboard() {
   updateNextUp();
   startClock();
   loadSessionHistory();
-  requestNotificationPermission();
 
-  focusBtn.addEventListener('click', toggleSession);
-  switchNowBtn.addEventListener('click', () => triggerTransition());
-  sessionNotes.addEventListener('input', () => { if (sessionActive) saveSessionState(); });
-  editScheduleBtn.addEventListener('click', () => {
-    cancelEditBtn.style.display = sessionActive ? '' : 'none';
-    showScreen('setup-screen');
-  });
-  document.getElementById('weekly-btn').addEventListener('click', openWeekly);
-  document.getElementById('weekly-close-btn').addEventListener('click', closeWeekly);
-  document.getElementById('weekly-modal').addEventListener('click', e => {
-    if (e.target === e.currentTarget) closeWeekly();
-  });
+  if (!dashboardInited) {
+    dashboardInited = true;
+    requestNotificationPermission();
+
+    focusBtn.addEventListener('click', toggleSession);
+    switchNowBtn.addEventListener('click', () => triggerTransition());
+    sessionNotes.addEventListener('input', () => { if (sessionActive) saveSessionState(); });
+    editScheduleBtn.addEventListener('click', () => {
+      cancelEditBtn.style.display = sessionActive ? '' : 'none';
+      showScreen('setup-screen');
+    });
+    document.getElementById('weekly-btn').addEventListener('click', openWeekly);
+    document.getElementById('weekly-close-btn').addEventListener('click', closeWeekly);
+    document.getElementById('weekly-modal').addEventListener('click', e => {
+      if (e.target === e.currentTarget) closeWeekly();
+    });
+  }
 
   if (restoreSessionIfAny()) {
     applyRestoredSessionUI();
@@ -464,6 +469,10 @@ async function loadSessionHistory() {
   try {
     const res  = await fetch('/history');
     const data = await res.json();
+
+    // Clear existing DB-loaded entries (keep in-memory items added this session)
+    sessionLogEl.querySelectorAll('.log-item-history').forEach(el => el.remove());
+
     if (!data.sessions || !data.sessions.length) return;
 
     const empty = sessionLogEl.querySelector('.log-empty');
@@ -791,7 +800,13 @@ function addLogItem(task, duration) {
 // ── Transition actions ─────────────────────────────────
 document.getElementById('back-btn').addEventListener('click', () => {
   showScreen('dashboard-screen');
-  transitionFired = false;
+  // Keep transitionFired = true so the clock doesn't immediately re-trigger.
+  // Advance targetBlock past the block we just dismissed.
+  if (targetBlock) {
+    const idx = schedule.findIndex(b => b.time === targetBlock.time && b.label === targetBlock.label);
+    targetBlock = schedule[idx + 1] || null;
+    saveSessionState();
+  }
 });
 
 document.getElementById('confirm-switch-btn').addEventListener('click', () => {
