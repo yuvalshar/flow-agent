@@ -29,7 +29,10 @@ let _restoredNotes  = '';
 let warningFired    = false;
 let transitionFired = false;
 let sessionLog      = [];
-let clockInterval   = null;
+let clockInterval      = null;
+let _summaryReqId      = 0;
+let _pendingTransition = null; // { task, duration, nextTask, notes, summary } — saved to DB only on confirm
+let _summaryCache      = null; // { task, nextTask, notes, summary } — reused if inputs unchanged
 let targetBlock       = null; // the next block at session-start; used for reliable transition detection
 let dashboardInited   = false;
 
@@ -228,17 +231,29 @@ function applyScheduleFromForm() {
 cancelEditBtn.addEventListener('click', () => {
   // Discard any edits, go straight back — session is still active in memory
   showScreen('dashboard-screen');
+  // If a transition fired while the user was editing, show it now.
+  if (sessionActive && transitionFired) {
+    triggerTransition(targetBlock);
+  }
 });
 
 startBtn.addEventListener('click', () => {
   if (!applyScheduleFromForm()) return;
   const wasActive = sessionActive;
+  if (wasActive && !transitionFired) {
+    // Recompute targetBlock from the updated schedule BEFORE initDashboard reads
+    // from localStorage — so restoreSessionIfAny() gets the correct state and
+    // applyRestoredSessionUI() is only called once.
+    // Skip if a transition already fired while editing — initDashboard will
+    // re-trigger it via restoreSessionIfAny using the original targetBlock.
+    targetBlock = getNextBlock();
+    const remaining = targetBlock ? timeToMinutes(targetBlock.time) - getNow() : 999;
+    warningFired    = remaining <= WARN_MINUTES;
+    transitionFired = remaining <= 0;
+    saveSessionState();
+  }
   showScreen('dashboard-screen');
   initDashboard();
-  // If a session was running when user opened Edit Schedule, restore it
-  if (wasActive) {
-    applyRestoredSessionUI();
-  }
 });
 
 // ── Session persistence ─────────────────────────────────
@@ -262,11 +277,18 @@ function restoreSessionIfAny() {
     const s = JSON.parse(saved);
     if (!s.sessionStart || !s.currentTask) return false;
 
-    sessionStart  = new Date(s.sessionStart);
-    currentTask   = s.currentTask;
-    targetBlock   = s.targetBlock || null;
-    sessionActive = true;
+    sessionStart   = new Date(s.sessionStart);
+    currentTask    = s.currentTask;
+    sessionActive  = true;
     _restoredNotes = s.notes || '';
+
+    // Validate the saved targetBlock against the current schedule — it may be
+    // stale if the schedule was edited since the session was saved.
+    const saved_tb = s.targetBlock;
+    const stillInSchedule = saved_tb && schedule.some(
+      b => b.time === saved_tb.time && b.label === saved_tb.label
+    );
+    targetBlock = stillInSchedule ? saved_tb : getNextBlock();
 
     // Recompute warning/transition flags from current time
     const remaining = targetBlock ? timeToMinutes(targetBlock.time) - getNow() : 999;
@@ -282,10 +304,14 @@ function applyRestoredSessionUI() {
   focusBtn.textContent = 'End session';
   focusBtn.classList.remove('btn-cta');
   focusBtn.classList.add('btn-ghost');
-  focusHint.textContent = '⌘↵ to end · use "Switch now" to trigger a transition';
+  if (warningFired && targetBlock) {
+    focusHint.textContent = `${WARN_MINUTES} min until ${targetBlock.label} — start wrapping up`;
+  } else {
+    focusHint.textContent = '⌘↵ to end · use "Switch now" to trigger a transition';
+  }
   switchNowBtn.disabled = false;
   if (ringSubLabel) ringSubLabel.textContent = 'elapsed';
-  if (warningFired)  sessionTimer.classList.add('warning');
+  sessionTimer.classList.toggle('warning', warningFired);
   curTaskDisplay.textContent = currentTask;
   curTaskDisplay.classList.add('visible');
   document.body.classList.add('focus-mode');
@@ -309,6 +335,10 @@ function initDashboard() {
     sessionNotes.addEventListener('input', () => { if (sessionActive) saveSessionState(); });
     editScheduleBtn.addEventListener('click', () => {
       cancelEditBtn.style.display = sessionActive ? '' : 'none';
+      // Repopulate form from current schedule so unsaved edits from a previous
+      // cancelled edit don't linger and get accidentally saved.
+      scheduleEntries.innerHTML = '';
+      schedule.forEach(r => addScheduleRow(r.time, r.label));
       showScreen('setup-screen');
     });
     document.getElementById('weekly-btn').addEventListener('click', openWeekly);
@@ -392,8 +422,7 @@ document.addEventListener('keydown', e => {
   // Esc — dismiss transition screen
   if (e.key === 'Escape') {
     if (document.getElementById('transition-screen').classList.contains('active')) {
-      showScreen('dashboard-screen');
-      transitionFired = false;
+      dismissTransition();
     }
     closeWeekly();
   }
@@ -409,6 +438,8 @@ function openWeekly() {
 
 function closeWeekly() {
   const modal = document.getElementById('weekly-modal');
+  // Move focus out before hiding so aria-hidden doesn't trap it
+  document.getElementById('weekly-btn')?.focus();
   modal.classList.remove('open');
   modal.setAttribute('aria-hidden', 'true');
 }
@@ -467,7 +498,7 @@ function formatLogDate(isoString) {
 
 async function loadSessionHistory() {
   try {
-    const res  = await fetch('/history');
+    const res  = await fetch('/history?limit=50');
     const data = await res.json();
 
     // Clear existing DB-loaded entries (keep in-memory items added this session)
@@ -527,6 +558,7 @@ function startSession(task) {
   sessionActive   = true;
   warningFired    = false;
   transitionFired = false;
+  _summaryCache   = null;
 
   targetBlock = getNextBlock();
 
@@ -576,6 +608,7 @@ function endSession(log = true) {
   warningFired    = false;
   transitionFired = false;
   targetBlock     = null;
+  _summaryCache   = null;
   clearSessionState();
 
   focusInput.disabled   = false;
@@ -716,41 +749,67 @@ function checkTransitionWarning() {
 
 // ── Trigger transition screen ──────────────────────────
 function triggerTransition(overrideNext = null) {
+  // If the user is mid-edit on the setup screen, don't hijack it.
+  // transitionFired stays true so initDashboard re-triggers this on return.
+  if (document.getElementById('setup-screen').classList.contains('active')) return;
+
   const next     = overrideNext || getNextBlock() || { label: 'Next task' };
   const duration = sessionActive ? (Math.round((new Date() - sessionStart) / 60000) || 0) : 0;
   const task     = currentTask || 'Current task';
+  const notes    = sessionNotes.value.trim();
 
   document.getElementById('t-from-task').textContent = task;
   document.getElementById('t-duration').textContent  = `${duration} min session`;
   document.getElementById('t-to-task').textContent   = next.label;
   document.getElementById('context-summary').textContent = 'Generating summary...';
 
+  // Store transition data now. Summary starts as a fallback and gets updated
+  // when the LLM responds. DB is only written when the user confirms.
+  const fallback = `You worked on "${task}" for ${duration} min. Pick up here when you return.`;
+  _pendingTransition = { task, duration, nextTask: next.label, notes, summary: fallback };
+
   showScreen('transition-screen');
-  const notes = sessionNotes.value.trim();
-  generateContextSummary(task, duration, next.label, notes);
+  fetchTransitionSummary(task, duration, next.label, notes);
 }
 
-async function generateContextSummary(task, duration, nextTask, notes = '') {
+async function fetchTransitionSummary(task, duration, nextTask, notes = '') {
+  // Use cached summary if inputs haven't changed
+  if (
+    _summaryCache &&
+    _summaryCache.task    === task &&
+    _summaryCache.nextTask === nextTask &&
+    _summaryCache.notes   === notes
+  ) {
+    document.getElementById('context-summary').textContent = _summaryCache.summary;
+    if (_pendingTransition) _pendingTransition.summary = _summaryCache.summary;
+    return;
+  }
+
+  const reqId = ++_summaryReqId;
   try {
-    const res = await fetch('/transition', {
+    const res = await fetch('/summarize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ current_task: task, duration_minutes: duration, next_task: nextTask, notes })
     });
+    if (reqId !== _summaryReqId) return; // a newer request is in flight — discard
     if (!res.ok) {
       const err = await res.text().catch(() => res.status);
-      console.error('Transition API error', res.status, err);
-      document.getElementById('context-summary').textContent =
-        `You worked on "${task}" for ${duration} min. Pick up here when you return.`;
+      console.error('Summarize API error', res.status, err);
+      // _pendingTransition.summary already holds the fallback text
+      document.getElementById('context-summary').textContent = _pendingTransition?.summary ?? '';
       return;
     }
     const data = await res.json();
-    document.getElementById('context-summary').textContent =
-      data.summary || 'Session complete.';
+    const summary = data.summary || _pendingTransition?.summary || 'Session complete.';
+    document.getElementById('context-summary').textContent = summary;
+    if (_pendingTransition) _pendingTransition.summary = summary;
+    // Cache result for reuse if inputs don't change
+    _summaryCache = { task, nextTask, notes, summary };
   } catch (e) {
-    console.error('generateContextSummary failed:', e);
-    document.getElementById('context-summary').textContent =
-      `You worked on "${task}" for ${duration} min. Pick up here when you return.`;
+    if (reqId !== _summaryReqId) return;
+    console.error('fetchTransitionSummary failed:', e);
+    document.getElementById('context-summary').textContent = _pendingTransition?.summary ?? '';
   }
 }
 
@@ -797,20 +856,54 @@ function addLogItem(task, duration) {
   sessionLog.push({ task, duration });
 }
 
-// ── Transition actions ─────────────────────────────────
-document.getElementById('back-btn').addEventListener('click', () => {
+// ── Dismiss transition (back-btn + Escape) ─────────────
+function dismissTransition() {
   showScreen('dashboard-screen');
-  // Keep transitionFired = true so the clock doesn't immediately re-trigger.
-  // Advance targetBlock past the block we just dismissed.
+  _pendingTransition = null; // discard — no DB save
+
+  let autoTransition = false;
   if (targetBlock) {
-    const idx = schedule.findIndex(b => b.time === targetBlock.time && b.label === targetBlock.label);
-    targetBlock = schedule[idx + 1] || null;
+    const remaining = timeToMinutes(targetBlock.time) - getNow();
+    if (remaining <= 0) {
+      // Auto-transition: scheduled time has elapsed — advance so the clock
+      // doesn't immediately re-trigger the same transition on the next tick.
+      const idx = schedule.findIndex(b => b.time === targetBlock.time && b.label === targetBlock.label);
+      targetBlock  = idx !== -1 ? (schedule[idx + 1] || null) : getNextBlock();
+      autoTransition = true;
+    }
+    // If remaining > 0 the user hit "Switch now" early — keep targetBlock so
+    // the scheduled auto-transition still fires at the correct time.
     saveSessionState();
   }
-});
+  transitionFired = false;
+  // Reset warningFired only when we advanced to a new block (auto-transition).
+  // For early manual dismissals, keep it true so the chime doesn't re-fire.
+  if (autoTransition || !targetBlock) warningFired = false;
+}
+
+// ── Transition actions ─────────────────────────────────
+document.getElementById('back-btn').addEventListener('click', dismissTransition);
 
 document.getElementById('confirm-switch-btn').addEventListener('click', () => {
   const nextLabel = document.getElementById('t-to-task').textContent;
+
+  // Save session to DB only now that the user has confirmed the switch.
+  if (_pendingTransition) {
+    const pt = _pendingTransition;
+    fetch('/transition', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        current_task:     pt.task,
+        duration_minutes: pt.duration,
+        next_task:        pt.nextTask,
+        notes:            pt.notes,
+        summary:          pt.summary,
+      })
+    }).catch(e => console.error('Failed to save transition:', e));
+    _pendingTransition = null;
+  }
+
   endSession(true);
   showScreen('dashboard-screen');
   renderTodaySchedule();
